@@ -1,75 +1,133 @@
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
-from sklearn.linear_model import Ridge
-from sklearn.model_selection import cross_val_score
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.kernel_approximation import RBFSampler
+from sklearn.model_selection import cross_val_score, KFold
+from sklearn.metrics import r2_score
+from scipy.stats import zscore
 import joblib
-from sklearn.linear_model import LinearRegression
 
+# -------------------------
+# Load Data
+# -------------------------
 X_train = np.load("X_train.npy")
-Y_train = np.load("Y_train.npy")
+y_train = np.load("Y_train.npy")
+print("Data shapes:", X_train.shape, y_train.shape)
 
-"""
-see if some features are irrelevant, redundant, or strongly correlated.
-    It ranges from –1 to +1:
-        +1 → perfect positive correlation (as one increases, the other increases proportionally).
-        –1 → perfect negative correlation (as one increases, the other decreases proportionally).   
-        0 → no linear relationship.
-"""
+# -------------------------
+# Feature Selection
+# -------------------------
+df = pd.DataFrame(X_train, columns=[f"x{i+1}" for i in range(X_train.shape[1])])
+df["y"] = y_train
 
-print(X_train.shape, Y_train.shape)
-
-# Quick look at correlations
-df = pd.DataFrame(X_train, columns=[f"x{i}" for i in range(1, 7)])
-df["y"] = Y_train
-print(df.corr())
-
-
-# Get correlations with target y
+# Keep features with correlation > 0.1
 corr_with_y = df.corr()["y"].drop("y")
+selected_features = corr_with_y[abs(corr_with_y) > 0.1].index.tolist()
+selected_indices = [int(f[1:])-1 for f in selected_features]
 
-# Sort by absolute value
-corr_sorted = corr_with_y.abs().sort_values(ascending=False)
+print("Selected features:", selected_features)
+X_sel = df[selected_features].values
 
-print("Correlations with y (sorted by importance):")
-print(corr_with_y.loc[corr_sorted.index])
+# -------------------------
+# Remove Outliers
+# -------------------------
+mask = (np.abs(zscore(X_sel)) < 3).all(axis=1)
+X_clean = X_sel[mask]
+y_clean = y_train[mask]
+print(f"Removed {X_sel.shape[0] - X_clean.shape[0]} outliers")
 
-# Polynomial regression pipeline
-poly_model = Pipeline([
-    ("poly", PolynomialFeatures(degree=2, include_bias=False)),
-    ("scaler", StandardScaler()),
-    ("ridge", Ridge(alpha=1.0))
-])
+# -------------------------
+# Define Pipelines
+# -------------------------
+pipelines = {
+    'poly2_linear': Pipeline([
+        ("poly", PolynomialFeatures(2, include_bias=False)),
+        ("scaler", StandardScaler()),
+        ("regressor", LinearRegression())
+    ]),
+    'poly3_linear': Pipeline([
+        ("poly", PolynomialFeatures(3, include_bias=False)),
+        ("scaler", StandardScaler()),
+        ("regressor", LinearRegression())
+    ]),
+    'poly2_ridge': Pipeline([
+        ("poly", PolynomialFeatures(2, include_bias=False)),
+        ("scaler", StandardScaler()),
+        ("regressor", Ridge())
+    ]),
+    'poly2_lasso': Pipeline([
+        ("poly", PolynomialFeatures(2, include_bias=False)),
+        ("scaler", StandardScaler()),
+        ("regressor", Lasso(max_iter=10000))
+    ]),
+    'rbf_linear': Pipeline([
+        ("rbf", RBFSampler(n_components=50, random_state=42)),
+        ("scaler", StandardScaler()),
+        ("regressor", LinearRegression())
+    ]),
+    'rbf_ridge': Pipeline([
+        ("rbf", RBFSampler(n_components=50, random_state=42)),
+        ("scaler", StandardScaler()),
+        ("regressor", Ridge())
+    ])
+}
 
-# Cross-validation
-poly_scores = cross_val_score(poly_model, X_train, Y_train, cv=5, scoring="r2")
-print(f"Polynomial Regression (degree=2) mean R²: {poly_scores.mean():.4f}")
+# -------------------------
+# Cross-validation setup
+# -------------------------
+cv = KFold(n_splits=5, shuffle=True, random_state=42)
 
-# Fit full model
-poly_model.fit(X_train, Y_train)
+# -------------------------
+# Helper: Tune alpha for Ridge/Lasso
+# -------------------------
+def tune_alpha(model, alphas, X, y):
+    best_score, best_alpha = -np.inf, None
+    for alpha in alphas:
+        model.set_params(regressor__alpha=alpha)
+        score = cross_val_score(model, X, y, cv=cv, scoring='r2').mean()
+        if score > best_score:
+            best_score, best_alpha = score, alpha
+    model.set_params(regressor__alpha=best_alpha)
+    return best_score, best_alpha
 
+# -------------------------
+# Test models
+# -------------------------
+results = {}
+for name, model in pipelines.items():
+    print(f"\nTesting {name}...")
+
+    if 'ridge' in name:
+        score, alpha = tune_alpha(model, [0.01, 0.1, 1, 10], X_clean, y_clean)
+        results[name] = {'score': score, 'alpha': alpha}
+        print(f"Best alpha={alpha}, CV R2={score:.4f}")
+    elif 'lasso' in name:
+        score, alpha = tune_alpha(model, [0.001, 0.01, 0.1, 1], X_clean, y_clean)
+        results[name] = {'score': score, 'alpha': alpha}
+        print(f"Best alpha={alpha}, CV R2={score:.4f}")
+    else:
+        score = cross_val_score(model, X_clean, y_clean, cv=cv, scoring='r2').mean()
+        results[name] = {'score': score}
+        print(f"CV R2={score:.4f}")
+
+# -------------------------
+# Select best model
+# -------------------------
+best_model_name = max(results, key=lambda k: results[k]['score'])
+best_model = pipelines[best_model_name]
+best_model.fit(X_clean, y_clean)
+
+train_r2 = r2_score(y_clean, best_model.predict(X_clean))
+print(f"\nBest model: {best_model_name} | CV R2={results[best_model_name]['score']:.4f} | Training R2={train_r2:.4f}")
+
+# -------------------------
 # Save model
-joblib.dump(poly_model, "poly_model.pkl")
-print("Polynomial model saved as poly_model.pkl")
-
-
-from sklearn.linear_model import LinearRegression
-
-# Linear regression pipeline (only scaling)
-linear_model = Pipeline([
-    ("scaler", StandardScaler()),  # scale features
-    ("linreg", LinearRegression())
-])
-
-# Cross-validation
-linear_scores = cross_val_score(linear_model, X_train, Y_train, cv=5, scoring="r2")
-print(f"Linear Regression mean R²: {linear_scores.mean():.4f}")
-
-# Fit full model
-linear_model.fit(X_train, Y_train)
-
-# Save model
-joblib.dump(linear_model, "linear_model.pkl")
-print("Linear model saved as linear_model.pkl")
+# -------------------------
+model_data = {
+    'model': best_model,
+    'selected_indices': selected_indices,
+    'model_name': best_model_name
+}
+# joblib.dump(model_data, "regression_model.pkl")
