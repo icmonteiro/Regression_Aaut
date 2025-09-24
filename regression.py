@@ -1,83 +1,20 @@
 import numpy as np
-import pandas as pd
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import PolynomialFeatures, StandardScaler
-from sklearn.linear_model import LinearRegression, Ridge, Lasso
-from sklearn.kernel_approximation import RBFSampler
-from sklearn.model_selection import cross_val_score, KFold
-from sklearn.metrics import r2_score
-from scipy.stats import zscore
 import joblib
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import PolynomialFeatures, RobustScaler
+from sklearn.linear_model import Ridge, Lasso, ElasticNet, LinearRegression
+from sklearn.kernel_approximation import RBFSampler
+from sklearn.model_selection import KFold, GridSearchCV
+from sklearn.metrics import r2_score
+from sklearn.feature_selection import SelectKBest, f_regression
 
 # -------------------------
-# Load Data
+# Load training data
 # -------------------------
 X_train = np.load("X_train.npy")
 y_train = np.load("Y_train.npy")
-print("Data shapes:", X_train.shape, y_train.shape)
-
-# -------------------------
-# Feature Selection
-# -------------------------
-df = pd.DataFrame(X_train, columns=[f"x{i+1}" for i in range(X_train.shape[1])])
-df["y"] = y_train
-
-# Keep features with correlation > 0.1
-corr_with_y = df.corr()["y"].drop("y")
-selected_features = corr_with_y[abs(corr_with_y) > 0.1].index.tolist()
-selected_indices = [int(f[1:])-1 for f in selected_features]
-
-print("Selected features:", selected_features)
-X_sel = df[selected_features].values
-
-# -------------------------
-# Remove Outliers
-# -------------------------
-mask = (np.abs(zscore(X_sel)) < 3).all(axis=1)
-X_clean = X_sel[mask]
-y_clean = y_train[mask]
-print(f"Removed {X_sel.shape[0] - X_clean.shape[0]} outliers")
-
-# -------------------------
-# Define Pipelines
-# -------------------------
-pipelines = {
-    'poly2_linear': Pipeline([
-        ("poly", PolynomialFeatures(2, include_bias=False)),
-        ("scaler", StandardScaler()),
-        ("regressor", LinearRegression())
-    ]),
-    'poly3_linear': Pipeline([
-        ("poly", PolynomialFeatures(3, include_bias=False)),
-        ("scaler", StandardScaler()),
-        ("regressor", LinearRegression())
-    ]),
-      'poly4_linear': Pipeline([
-        ("poly", PolynomialFeatures(4, include_bias=False)),
-        ("scaler", StandardScaler()),
-        ("regressor", LinearRegression())
-    ]),
-    'poly2_ridge': Pipeline([
-        ("poly", PolynomialFeatures(2, include_bias=False)),
-        ("scaler", StandardScaler()),
-        ("regressor", Ridge())
-    ]),
-    'poly2_lasso': Pipeline([
-        ("poly", PolynomialFeatures(2, include_bias=False)),
-        ("scaler", StandardScaler()),
-        ("regressor", Lasso(max_iter=10000))
-    ]),
-    'rbf_linear': Pipeline([
-        ("rbf", RBFSampler(n_components=50, random_state=42)),
-        ("scaler", StandardScaler()),
-        ("regressor", LinearRegression())
-    ]),
-    'rbf_ridge': Pipeline([
-        ("rbf", RBFSampler(n_components=50, random_state=42)),
-        ("scaler", StandardScaler()),
-        ("regressor", Ridge())
-    ])
-}
+print(f"Data shapes: {X_train.shape}, {y_train.shape}")
+print(f"Target mean: {y_train.mean():.4f}, std: {y_train.std():.4f}")
 
 # -------------------------
 # Cross-validation setup
@@ -85,54 +22,109 @@ pipelines = {
 cv = KFold(n_splits=5, shuffle=True, random_state=42)
 
 # -------------------------
-# Helper: Tune alpha for Ridge/Lasso
+# Pipeline 
 # -------------------------
-def tune_alpha(model, alphas, X, y):
-    best_score, best_alpha = -np.inf, None
-    for alpha in alphas:
-        model.set_params(regressor__alpha=alpha)
-        score = cross_val_score(model, X, y, cv=cv, scoring='r2').mean()
-        if score > best_score:
-            best_score, best_alpha = score, alpha
-    model.set_params(regressor__alpha=best_alpha)
-    return best_score, best_alpha
+pipeline = Pipeline([
+    ("scaler", RobustScaler()),
+    ("feature_selector", SelectKBest(f_regression)),
+    ("features", "passthrough"),    
+    ("regressor", "passthrough")   
+])
 
 # -------------------------
-# Test models
+# Parameter grid for GridSearch
 # -------------------------
-results = {}
-for name, model in pipelines.items():
-    print(f"\nTesting {name}...")
-    
-    if 'ridge' in name:
-        score, alpha = tune_alpha(model, [0.01, 0.1, 1, 10], X_clean, y_clean)
-        results[name] = {'score': score, 'alpha': alpha}
-        print(f"Best alpha={alpha}, CV R2={score:.4f}")
-    elif 'lasso' in name:
-        score, alpha = tune_alpha(model, [0.001, 0.01, 0.1, 1], X_clean, y_clean)
-        results[name] = {'score': score, 'alpha': alpha}
-        print(f"Best alpha={alpha}, CV R2={score:.4f}")
-    else:
-        score = cross_val_score(model, X_clean, y_clean, cv=cv, scoring='r2').mean()
-        results[name] = {'score': score}
-        print(f"CV R2={score:.4f}")
+param_grid = [
+    # Polynomial features - Ridge
+    {
+        "features": [PolynomialFeatures(include_bias=False)],
+        "features__degree": [2, 3, 4],
+        "feature_selector__k": [4, 5, 6],
+        "regressor": [Ridge()],
+        "regressor__alpha": [0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
+    },
+    # Polynomial features - Lasso
+    {
+        "features": [PolynomialFeatures(include_bias=False)],
+        "features__degree": [2, 3],
+        "feature_selector__k": [4, 5, 6],
+        "regressor": [Lasso(max_iter=20000)],
+        "regressor__alpha": [0.0001, 0.001, 0.01, 0.1, 1.0]
+    },
+    # Polynomial features - LinearRegression
+    {
+        "features": [PolynomialFeatures(include_bias=False)],
+        "features__degree": [2, 3, 4],
+        "feature_selector__k": [4, 5, 6],
+        "regressor": [LinearRegression()]
+    },
+    # RBF features - Ridge
+    {
+        "features": [RBFSampler(random_state=42)],
+        "features__gamma": [0.01, 0.05, 0.1, 0.2, 0.5],
+        "features__n_components": [100, 200, 300],
+        "feature_selector__k": [4, 5, 6],
+        "regressor": [Ridge()],
+        "regressor__alpha": [0.01, 0.1, 1.0, 10.0]
+    },
+    # RBF features - Lasso
+    {
+        "features": [RBFSampler(random_state=42)],
+        "features__gamma": [0.01, 0.05, 0.1, 0.2, 0.5],
+        "features__n_components": [100, 200, 300],
+        "feature_selector__k": [4, 5, 6],
+        "regressor": [Lasso(max_iter=20000)],
+        "regressor__alpha": [0.0001, 0.001, 0.01, 0.1, 1.0]
+    },
+    # RBF features - LinearRegression
+    {
+        "features": [RBFSampler(random_state=42)],
+        "features__gamma": [0.01, 0.05, 0.1, 0.2],
+        "features__n_components": [100, 200, 300],
+        "feature_selector__k": [4, 5, 6],
+        "regressor": [LinearRegression()]
+    }
+]
 
 # -------------------------
-# Select best model
+# Grid search
 # -------------------------
-best_model_name = max(results, key=lambda k: results[k]['score'])
-best_model = pipelines[best_model_name]
-best_model.fit(X_clean, y_clean)
+search = GridSearchCV(
+    estimator=pipeline,
+    param_grid=param_grid,
+    scoring="r2",
+    cv=cv,
+    n_jobs=-1,
+    verbose=1,
+    refit=True
+)
 
-train_r2 = r2_score(y_clean, best_model.predict(X_clean))
-print(f"\nBest model: {best_model_name} | CV R2={results[best_model_name]['score']:.4f} | Training R2={train_r2:.4f}")
+print("Starting grid search...")
+search.fit(X_train, y_train)
+
+# -------------------------
+# Best model & evaluation
+# -------------------------
+best_model = search.best_estimator_
+cv_r2 = search.best_score_
+train_r2 = r2_score(y_train, best_model.predict(X_train))
+
+print("\n=== Best Model Results ===")
+print(f"Best params: {search.best_params_}")
+print(f"Cross-validation R² (mean): {cv_r2:.6f}")
+print(f"Training R²: {train_r2:.6f}")
 
 # -------------------------
 # Save model
 # -------------------------
 model_data = {
     'model': best_model,
-    'selected_indices': selected_indices,
-    'model_name': best_model_name
+    'model_name': 'enhanced_pipeline',
+    'best_params': search.best_params_,
+    'cv_score': cv_r2,
+    'train_score': train_r2,
+    'expected_test_performance': cv_r2
 }
-# joblib.dump(model_data, "regression_model.pkl")
+
+joblib.dump(model_data, "regression_model.pkl")
+print("\nSaved model to regression_model.pkl")
