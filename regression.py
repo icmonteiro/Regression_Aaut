@@ -52,11 +52,6 @@ pipelines = {
         ("scaler", StandardScaler()),
         ("regressor", LinearRegression())
     ]),
-    'poly4_linear': Pipeline([
-        ("poly", PolynomialFeatures(4, include_bias=False)),
-        ("scaler", StandardScaler()),
-        ("regressor", LinearRegression())
-    ]),
     'poly2_ridge': Pipeline([
         ("poly", PolynomialFeatures(2, include_bias=False)),
         ("scaler", StandardScaler()),
@@ -103,7 +98,7 @@ def tune_alpha(model, alphas, X, y):
 results = {}
 for name, model in pipelines.items():
     print(f"\nTesting {name}...")
-
+    
     if 'ridge' in name:
         score, alpha = tune_alpha(model, [0.01, 0.1, 1, 10], X_clean, y_clean)
         results[name] = {'score': score, 'alpha': alpha}
