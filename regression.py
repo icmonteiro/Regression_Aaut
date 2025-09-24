@@ -52,6 +52,11 @@ pipelines = {
         ("scaler", StandardScaler()),
         ("regressor", LinearRegression())
     ]),
+      'poly4_linear': Pipeline([
+        ("poly", PolynomialFeatures(4, include_bias=False)),
+        ("scaler", StandardScaler()),
+        ("regressor", LinearRegression())
+    ]),
     'poly2_ridge': Pipeline([
         ("poly", PolynomialFeatures(2, include_bias=False)),
         ("scaler", StandardScaler()),
