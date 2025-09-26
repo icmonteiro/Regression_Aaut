@@ -48,7 +48,7 @@ param_grid = [
         "features": [PolynomialFeatures(include_bias=False)],
         "features__degree": [2, 3],
         "feature_selector__k": [4, 5, 6],
-        "regressor": [Lasso(max_iter=20000)],
+        "regressor": [Lasso(max_iter=50000)],
         "regressor__alpha": [0.0001, 0.001, 0.01, 0.1, 1.0]
     },
     # Polynomial features - LinearRegression
@@ -73,7 +73,7 @@ param_grid = [
         "features__gamma": [0.01, 0.05, 0.1, 0.2, 0.5],
         "features__n_components": [100, 200, 300],
         "feature_selector__k": [4, 5, 6],
-        "regressor": [Lasso(max_iter=20000)],
+        "regressor": [Lasso(max_iter=50000)],
         "regressor__alpha": [0.0001, 0.001, 0.01, 0.1, 1.0]
     },
     # RBF features - LinearRegression
